@@ -1,71 +1,47 @@
 pipeline {
     agent any
-    
     environment {
-        // Docker Hub Details
-        DOCKER_HUB_USER = 'devpractice1' 
-        IMAGE_NAME      = 'frontend-service'
-        IMAGE_TAG       = "${BUILD_NUMBER}"
-        
-        // SonarQube Details
-        SONAR_TOKEN     = 'squ_cf98a98fc60dc11109f16b28b5d018d43d4d74a1'
-        SONAR_HOST_URL  = 'http://54.162.179.31:9000/' // ఒకవేళ సోనార్ వేరే ఐపీ మీద ఉంటే ఆ ఐపీ ఇవ్వండి
+        DOCKER_IMAGE = 'devpractice1/frontend-service'
+        DOCKER_CRED  = 'docker-hub-credentials-id' // Mee Jenkins Docker Hub Credential ID
     }
-    
     stages {
-        stage('1. Checkout Code') {
+        stage('1. Checkout') {
             steps {
-                echo '📥 Pulling Code from GitHub...'
                 checkout scm
             }
         }
-        
-        stage('2. SonarQube Code Analysis') {
+        stage('2. Build Image') {
             steps {
-                echo '🔍 Starting SonarQube Code Quality Scan...'
+                sh "docker build -t ${DOCKER_IMAGE}:${BUILD_NUMBER} ."
+            }
+        }
+        stage('3. Login & Push to Docker Hub') {
+            steps {
+                withCredentials([usernamePassword(credentialsId: "${DOCKER_CRED}", passwordVariable: 'PASSWORD', usernameVariable: 'USERNAME')]) {
+                    sh "echo ${PASSWORD} | docker login -u ${USERNAME} --password-stdin"
+                    sh "docker push ${DOCKER_IMAGE}:${BUILD_NUMBER}"
+                }
+            }
+        }
+        // ********** ఇదో ఆటోమేషన్ కోసం మనం యాడ్ చేయాల్సిన అసలైన స్టేజ్ **********
+        stage('4. Update Helm Manifest') {
+            steps {
                 script {
-                    // Jenkins build server టెర్మినల్ లో నేరుగా సోనార్ స్కాన్ రన్ చేయడానికి
-                    try {
-                        sh "sonar-scanner -Dsonar.projectKey=online-boutique-frontend -Dsonar.sources=./src/frontend -Dsonar.host.url=${SONAR_HOST_URL} -Dsonar.login=${SONAR_TOKEN}"
-                    } catch (Exception e) {
-                        echo "⚠️ Sonar Scanner ٹول సర్వర్ లో లేనట్లు ఉంది, ఐనా బిల్డ్ ముందుకు వెళ్తుంది: ${e.message}"
+                    // values.yaml లో ఉన్న పాత ఇమేజ్ ట్యాగ్‌ను కొత్త Jenkins Build Number తో రీప్లేస్ చేస్తుంది
+                    sh "sed -i 's/tag: .*/tag: \"${BUILD_NUMBER}\"/' helm-chart/values.yaml"
+                    
+                    // అప్‌డేట్ అయిన values.yaml ని తిరిగి మీ GitHub Repo కి పుష్ చేస్తుంది
+                    withCredentials([usernamePassword(credentialsId: 'git-cred', passwordVariable: 'GIT_PASS', usernameVariable: 'GIT_USER')]) {
+                        sh '''
+                            git config user.email "jenkins@devops.com"
+                            git config user.name "Jenkins CI"
+                            git add helm-chart/values.yaml
+                            git commit -m "chore: automated image tag update to v${BUILD_NUMBER} [skip ci]"
+                            git push https://${GIT_USER}:${GIT_PASS}@github.com/Bommalapuram/microservices-demo.git HEAD:main
+                        '''
                     }
                 }
             }
-        }
-        
-        stage('3. Docker Build Image') {
-            steps {
-                echo '🏗️ Building Docker Image for Frontend Service...'
-                script {
-                    // src/frontend లోపల ఉన్న Dockerfile ని బిల్డ్ చేస్తుంది
-                    sh "docker build -t ${DOCKER_HUB_USER}/${IMAGE_NAME}:${IMAGE_TAG} ./src/frontend"
-                    sh "docker build -t ${DOCKER_HUB_USER}/${IMAGE_NAME}:latest ./src/frontend"
-                }
-            }
-        }
-        
-        stage('4. Docker Push to Registry') {
-            steps {
-                echo '🚀 Pushing Images to Docker Hub...'
-                script {
-                    // మీ జెంకిన్స్ 'docker-hub-credentials' ని వాడుకుని లాగిన్ అవుతుంది
-                    withCredentials([usernamePassword(credentialsId: 'docker-hub-credentials', usernameVariable: 'USER', passwordVariable: 'PASS')]) {
-                        sh "echo ${PASS} | docker login -u ${USER} --password-stdin"
-                        sh "docker push ${DOCKER_HUB_USER}/${IMAGE_NAME}:${IMAGE_TAG}"
-                        sh "docker push ${DOCKER_HUB_USER}/${IMAGE_NAME}:latest"
-                    }
-                }
-            }
-        }
-    }
-    
-    post {
-        success {
-            echo "✨ Success: Docker Image version ${IMAGE_TAG} is live on devpractice1 Docker Hub!"
-        }
-        failure {
-            echo "❌ Error: Pipeline failed. Check console output."
         }
     }
 }
